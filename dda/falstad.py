@@ -91,15 +91,29 @@ class to_falstad:
     op_amp_swing : float
         Symmetric output clipping voltage for every op-amp stage (maxOut =
         +this, minOut = -this).
+    values : dict
+        Current numeric value for any free variable, e.g. ``{"w1": 0.73}``.
+        A trainable weight set by a digital pot isn't really "two live
+        signals multiplied" -- the pot only changes occasionally (when the
+        training loop updates it), not constantly like a real signal -- so
+        it's electrically a *coefficient*, the same as writing a literal
+        number directly in the DDA code. Naming a variable here treats it
+        exactly that way: ``mult(w1, x1)`` with ``values={"w1": 0.73}``
+        builds the same resistor-ratio gain stage as ``mult(0.73, x1)``
+        would, instead of being flagged as needing a real analog multiplier.
+        Substitution applies everywhere that variable appears, not just
+        inside ``mult`` -- it's a statement about the variable itself.
     """
 
     _OPAMP = {"sum", "neg", "int"}
 
-    def __init__(self, state, ref_r=10000.0, tau=1.0, default_input_v=2.0, op_amp_swing=15.0):
+    def __init__(self, state, ref_r=10000.0, tau=1.0, default_input_v=2.0, op_amp_swing=15.0,
+                 values=None):
         self.ref_r = ref_r
         self.tau = tau
         self.default_input_v = default_input_v
         self.op_amp_swing = op_amp_swing
+        self.values = dict(values) if values else {}
 
         self.state = clean(state, target="python").name_computing_elements()
         self._build_graph()
@@ -117,16 +131,29 @@ class to_falstad:
     # (same linearized-dependency approach as the schematic exporter: every
     # computing element becomes exactly one node; free variables are inputs)
 
+    def _classify(self, t):
+        """
+        One tail entry -> ("signal", Symbol) or ("literal", number). A
+        variable named in self.values is treated as a literal (its given
+        value), not a live signal -- see the `values` constructor parameter.
+        """
+        if isinstance(t, Symbol) and t.is_variable():
+            if t.head in self.values:
+                return "literal", self.values[t.head]
+            return "signal", t
+        return "literal", t
+
     def _tail_signals(self, head, tail):
         "Returns (signal_symbols, literal_numbers, extra) -- extra is (dt, ic) for int, else None."
+        body, extra = tail, None
         if head == "int" and len(tail) >= 2:
             body, dt, ic = tail[:-2], tail[-2], tail[-1]
-            sig = [t for t in body if isinstance(t, Symbol) and t.is_variable()]
-            lits = [t for t in body if not (isinstance(t, Symbol) and t.is_variable())]
-            return sig, lits, (dt, ic)
-        sig = [t for t in tail if isinstance(t, Symbol) and t.is_variable()]
-        lits = [t for t in tail if not (isinstance(t, Symbol) and t.is_variable())]
-        return sig, lits, None
+            extra = (dt, ic)
+        sig, lits = [], []
+        for t in body:
+            kind, val = self._classify(t)
+            (sig if kind == "signal" else lits).append(val)
+        return sig, lits, extra
 
     def _build_graph(self):
         self.defs = {}
@@ -229,11 +256,29 @@ class to_falstad:
         self._line("g", x, y, x, y + GRID * 2, 0)
 
     def _wire(self, x1, y1, x2, y2):
+        """
+        Orthogonal routing between two posts. A same-row/same-column wire is
+        one straight segment. Anything else routes through an *off-grid*
+        private row (y1+4) rather than travelling at the literal source row
+        for the whole x-distance -- every real coordinate in this file is
+        produced by _snap() (a multiple of 16), so y1+4 can never collide
+        with another node's row, wire, or bus, no matter how long the run
+        is or what it passes under/over. (An earlier version routed at the
+        source's exact row, which was fine until two *unrelated* things
+        legitimately shared that same row elsewhere in the circuit -- their
+        wires would then overlap on the same coordinates for the whole
+        shared span, silently merging two different electrical nodes into
+        one. This is the same failure mode CircuitJS1 flagged as "path to
+        ground with no resistance" when a free input's row happened to
+        match another stage's internal row it had to cross under.)
+        """
         if x1 == x2 or y1 == y2:
             self._line("w", x1, y1, x2, y2, 0)
-        else:
-            self._line("w", x1, y1, x2, y1, 0)
-            self._line("w", x2, y1, x2, y2, 0)
+            return
+        my = y1 + 4
+        self._line("w", x1, y1, x1, my, 0)
+        self._line("w", x1, my, x2, my, 0)
+        self._line("w", x2, my, x2, y2, 0)
 
     def _label(self, x, y, text):
         self._line("x", x, y, x + len(text) * 8 + 16, y + GRID, 0, 14, text.replace(" ", "\\ "))
@@ -370,6 +415,17 @@ class to_falstad:
                 inputs = [(src(s), self.ref_r) for s in fwd_sig] + literal_inputs(y0 + 260)
                 self.out_port[name] = self._emit_inverting_stage(
                     x0, y0, inputs, ("cap", cf), ic=float(ic), name=name)
+
+            elif head == "mult" and len(term.tail) >= 1 and len(literals) == len(term.tail):
+                # every operand resolved to a plain number (via a literal or a
+                # substituted value) -- this is just a constant, not a multiply.
+                k = 1.0
+                for lit in literals:
+                    k *= float(lit)
+                x, y = x0, y0
+                self._line("R", x, y, x - GRID * 3, y, 0, 0, 40.0, k, 0.0)
+                self._label(x - GRID * 3 - 90, y - 24, f"{name} = {k:g}")
+                self.out_port[name] = (x, y)
 
             elif head == "mult" and len(literals) == 1 and len(term.tail) == 2:
                 k = float(literals[0])

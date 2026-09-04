@@ -80,6 +80,33 @@ def test_static_mx_plus_b_is_fully_connected():
     assert sorted(circuit.unsupported) == ["mult_1"]
 
 
+def test_values_substitution_resolves_unsupported_multiply():
+    """
+    A weight set by a digital pot isn't "two live signals multiplied" --
+    the pot only moves when the training loop updates it, not constantly
+    like a real signal -- so at any given moment it's electrically just a
+    coefficient. `values=` says exactly that: substitute the variable's
+    current number in everywhere it appears, before classifying anything,
+    so mult(w, x) builds the same resistor-ratio stage mult(0.73, x) would.
+    """
+    x, m, b, y = symbols("x, m, b, y")
+    s = State({y: dda.neg(dda.sum(dda.mult(m, x), b))})
+    circuit = to_falstad(s, values={"m": 0.73})
+    assert circuit.unsupported == []
+    _assert_fully_connected(circuit)
+    assert "m" not in circuit.free_inputs
+    assert "x" in circuit.free_inputs
+
+
+def test_values_substitution_both_operands_becomes_a_constant():
+    "If every operand of a mult resolves to a number, it's not a multiply at all -- just a fixed voltage."
+    p, q, r = symbols("p, q, r")
+    s = State({r: dda.mult(p, q)})
+    circuit = to_falstad(s, values={"p": 2.0, "q": 3.0})
+    assert circuit.unsupported == []
+    assert " 6" in circuit.text or "6.0" in circuit.text
+
+
 def test_decay_self_loop_is_fully_connected():
     "dx/dt = -x: a single integrator feeding back on itself."
     xx = Symbol("xx")
