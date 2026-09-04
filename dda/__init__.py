@@ -52,7 +52,6 @@ def export(state, to, **kw):
     * DDA   (via :py:mod:`dda.dsl`)
     * SymPy (via :py:mod:`dda.sympy`)
     * Latex (via :py:mod:`dda.sympy`)
-    * Schematic, an SVG analog-computer block diagram (via :py:mod:`dda.schematic`)
 
     This function shall be nice, so it accepts many spelling/notation
     of these language names.
@@ -66,7 +65,6 @@ def export(state, to, **kw):
     from .dsl import to_traditional_dda
     from .sympy import to_sympy, to_latex
     from .scipy import to_scipy
-    from .schematic import to_schematic
     exporters = {
         "CppSolver": CppSolver,
         r"c(\+\+|pp)?": to_cpp,
@@ -74,7 +72,6 @@ def export(state, to, **kw):
         "sympy": to_sympy,
         "latex": to_latex,
         "scipy": to_scipy,
-        r"schematic|svg": to_schematic,
     }
     for k,v in exporters.items():
         if re.match(k, to, re.IGNORECASE):
